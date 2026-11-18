@@ -1,0 +1,50 @@
+name: Build release zip
+
+# Publish a GitHub Release tagged vX.Y.Z (matching "Version:" in the plugin header)
+# and this workflow attaches wp-pro-post-expiry.zip to it. Sites running the plugin
+# then see "Update now" on their Plugins page.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)build, e.g. v1.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check version matches tag
+        run: |
+          header=$(grep -m1 -E '^\s*\*\s*Version:' wp-pro-post-expiry.php | awk '{print $NF}')
+          const=$(grep -m1 "define( 'WPPE_VERSION'" wp-pro-post-expiry.php | sed -E "s/.*'([0-9.]+)'.*/\1/")
+          tag="${TAG#v}"
+          echo "tag=$tag header=$header constant=$const"
+          if [ "$tag" != "$header" ] || [ "$tag" != "$const" ]; then
+            echo "::error::Tag $TAG does not match Version header ($header) / WPPE_VERSION ($const)"; exit 1
+          fi
+
+      - name: Lint PHP
+        run: for f in *.php; do php -l "$f"; done
+
+      - name: Build zip
+        run: |
+          mkdir -p build/wp-pro-post-expiry
+          cp wp-pro-post-expiry.php uninstall.php README.md CHANGELOG.md build/wp-pro-post-expiry/
+          cd build && zip -r ../wp-pro-post-expiry.zip wp-pro-post-expiry
+
+      - name: Attach to release
+        run: gh release upload "$TAG" wp-pro-post-expiry.zip --clobber
