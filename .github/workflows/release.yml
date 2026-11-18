@@ -1,67 +1,89 @@
-name: Build release zip
+name: Release
 
-# Release a new version either way:
-#   A) push a tag:            git tag v1.3.0 && git push origin v1.3.0
-#   B) or publish a Release on GitHub with tag v1.3.0
-# The tag must match "Version:" and WPPE_VERSION in wp-pro-post-expiry.php.
-# This workflow builds wp-pro-post-expiry.zip, creates the Release if needed
-# (notes taken from CHANGELOG.md) and attaches the zip. Sites running the plugin
-# then see "Update now" on their Plugins page.
+# How to release a new version:
+#   1. Bump "Version:" and WPPE_VERSION in wp-pro-post-expiry.php (same number),
+#      and add a "## X.Y.Z — date" section to CHANGELOG.md.
+#   2. Commit to main (from your computer or straight in GitHub's web editor).
+# This workflow then sees a version with no Release yet, builds wp-pro-post-expiry.zip,
+# creates Release vX.Y.Z (notes from CHANGELOG.md) and attaches the zip.
+# Sites running the plugin then see "Update now" on their Plugins page.
+#
+# Pushing a vX.Y.Z tag or publishing a Release by hand also works.
 
 on:
   push:
+    branches: [main]
+    paths: ['wp-pro-post-expiry.php', 'CHANGELOG.md']
     tags: ['v*']
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to (re)build, e.g. v1.2.0"
-        required: true
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ github.event.release.tag_name || github.ref }}
 
-      - name: Check version matches tag
+      - name: Read version
+        id: v
         run: |
           header=$(grep -m1 -E '^\s*\*\s*Version:' wp-pro-post-expiry.php | awk '{print $NF}')
           const=$(grep -m1 "define( 'WPPE_VERSION'" wp-pro-post-expiry.php | sed -E "s/.*'([0-9.]+)'.*/\1/")
-          tag="${TAG#v}"
-          echo "tag=$tag header=$header constant=$const"
-          if [ "$tag" != "$header" ] || [ "$tag" != "$const" ]; then
-            echo "::error::Tag $TAG does not match Version header ($header) / WPPE_VERSION ($const)"; exit 1
+          echo "header=$header constant=$const"
+          if [ "$header" != "$const" ]; then
+            echo "::error::Version header ($header) and WPPE_VERSION ($const) differ"; exit 1
+          fi
+          tag="v$header"
+          if [ "${{ github.event_name }}" = "release" ]; then tag="${{ github.event.release.tag_name }}"; fi
+          if [ "${{ github.ref_type }}" = "tag" ]; then tag="${{ github.ref_name }}"; fi
+          if [ "${tag#v}" != "$header" ]; then
+            echo "::error::Tag $tag does not match plugin version $header"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # On a branch push, only release when this version has no Release yet.
+          if [ "${{ github.ref_type }}" = "branch" ] && gh release view "$tag" >/dev/null 2>&1 \
+             && gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx 'wp-pro-post-expiry.zip'; then
+            echo "Release $tag already exists with zip — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Lint PHP
+        if: steps.v.outputs.skip != 'true'
         run: for f in *.php; do php -l "$f"; done
 
       - name: Build zip
+        if: steps.v.outputs.skip != 'true'
         run: |
           mkdir -p build/wp-pro-post-expiry
           cp wp-pro-post-expiry.php uninstall.php README.md CHANGELOG.md build/wp-pro-post-expiry/
           cd build && zip -r ../wp-pro-post-expiry.zip wp-pro-post-expiry
 
       - name: Release notes from CHANGELOG.md
+        if: steps.v.outputs.skip != 'true'
         run: |
-          v="${TAG#v}"
-          awk -v v="$v" '$0 ~ "^## "v"( |$)" {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          v="${{ steps.v.outputs.tag }}"; v="${v#v}"
+          awk -v v="$v" 'index($0, "## " v) == 1 {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "See CHANGELOG.md" > notes.md
           cat notes.md
 
       - name: Create release (if missing) and attach zip
+        if: steps.v.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "WP Pro Post Expiry ${TAG#v}" --notes-file notes.md --verify-tag
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "WP Pro Post Expiry ${TAG#v}" --notes-file notes.md
           fi
           gh release upload "$TAG" wp-pro-post-expiry.zip --clobber
