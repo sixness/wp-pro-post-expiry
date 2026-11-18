@@ -31,7 +31,7 @@ Without `id` it uses the current post (works in Elementor single and loop templa
 
 1. Bump the version in **both** the `Version:` header and `WPPE_VERSION` in `wp-pro-post-expiry.php`, and add a `CHANGELOG.md` entry.
 2. Commit and push.
-3. Create a GitHub Release with tag `vX.Y.Z` (same version). The **Build release zip** workflow attaches `wp-pro-post-expiry.zip` automatically.
+3. Push a tag `vX.Y.Z` (same version) — `git tag v1.3.0 && git push origin v1.3.0` — or publish a GitHub Release with that tag. The **Build release zip** workflow creates the Release (notes from `CHANGELOG.md`) and attaches `wp-pro-post-expiry.zip`.
 4. Sites pick it up within ~6 hours, or immediately via **Check for updates** under the plugin name.
 
 ## License

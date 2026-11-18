@@ -1,16 +1,22 @@
 name: Build release zip
 
-# Publish a GitHub Release tagged vX.Y.Z (matching "Version:" in the plugin header)
-# and this workflow attaches wp-pro-post-expiry.zip to it. Sites running the plugin
+# Release a new version either way:
+#   A) push a tag:            git tag v1.3.0 && git push origin v1.3.0
+#   B) or publish a Release on GitHub with tag v1.3.0
+# The tag must match "Version:" and WPPE_VERSION in wp-pro-post-expiry.php.
+# This workflow builds wp-pro-post-expiry.zip, creates the Release if needed
+# (notes taken from CHANGELOG.md) and attaches the zip. Sites running the plugin
 # then see "Update now" on their Plugins page.
 
 on:
+  push:
+    tags: ['v*']
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to (re)build, e.g. v1.2.0"
+        description: "Existing tag to (re)build, e.g. v1.2.0"
         required: true
 
 permissions:
@@ -20,7 +26,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
@@ -46,5 +52,16 @@ jobs:
           cp wp-pro-post-expiry.php uninstall.php README.md CHANGELOG.md build/wp-pro-post-expiry/
           cd build && zip -r ../wp-pro-post-expiry.zip wp-pro-post-expiry
 
-      - name: Attach to release
-        run: gh release upload "$TAG" wp-pro-post-expiry.zip --clobber
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v="${TAG#v}"
+          awk -v v="$v" '$0 ~ "^## "v"( |$)" {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md" > notes.md
+          cat notes.md
+
+      - name: Create release (if missing) and attach zip
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "WP Pro Post Expiry ${TAG#v}" --notes-file notes.md --verify-tag
+          fi
+          gh release upload "$TAG" wp-pro-post-expiry.zip --clobber
