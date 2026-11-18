@@ -13,7 +13,7 @@ name: Release
 on:
   push:
     branches: [main]
-    paths: ['wp-pro-post-expiry.php', 'CHANGELOG.md']
+    paths: ['wp-pro-post-expiry.php', 'CHANGELOG.md', '.github/workflows/release.yml']
     tags: ['v*']
   release:
     types: [published]
