@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4.1 — 2026-11-23
+- Removed the "Last updated" text from the plugin's row on the Plugins page.
+
 ## 1.4.0 — 2026-11-23
 - Redirect target is now picked from a list of published pages (Settings and the Post Expiry box). "Custom URL…" is still available for any other address.
 - Per post: "Default" (use Settings), a page, "No redirect", or a custom URL.
