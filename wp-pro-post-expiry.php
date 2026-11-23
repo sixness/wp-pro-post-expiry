@@ -1,9 +1,9 @@
 <?php
 /**
  * Plugin Name:       WP Pro Post Expiry
- * Description:       Give posts an expiry date & time (edit screen, list column and Quick Edit). When a post expires it is switched to Draft, Private, moved to Trash, or moved into a chosen category — optionally together with all its WPML translations. Includes a live countdown ([wppe_countdown] shortcode or automatic).
- * Version:           1.2.0
- * Last Updated:      2026-11-18
+ * Description:       Give posts an expiry date & time (edit screen, list column and Quick Edit). When a post expires it is switched to Draft, Private, moved to Trash, or moved into a chosen category — optionally together with all its WPML translations. Can redirect visitors from expired posts to a page of your choice and adds a "post-expired" body class. Includes a live countdown ([wppe_countdown] shortcode or automatic).
+ * Version:           1.3.0
+ * Last Updated:      2026-11-23
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            WP Pro Design
@@ -17,11 +17,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WPPE_VERSION', '1.2.0' );
+define( 'WPPE_VERSION', '1.3.0' );
 define( 'WPPE_GITHUB_REPO', 'sixness/wp-pro-post-expiry' );
-define( 'WPPE_UPDATED', '2026-11-18' );
+define( 'WPPE_UPDATED', '2026-11-23' );
 define( 'WPPE_OPTION', 'wppe_settings' );
 define( 'WPPE_META_KEY', '_wppe_expiry_datetime' );
+define( 'WPPE_REDIRECT_META', '_wppe_redirect_url' ); // Per-post redirect target (optional).
+define( 'WPPE_PATH_META', '_wppe_expired_path' );    // URL path the post had when it expired.
 define( 'WPPE_LEGACY_META_KEY', 'hs_expiry_datetime' ); // Used by the old "Special Offers expiry" snippet.
 define( 'WPPE_CRON_HOOK', 'wppe_check_expired' );
 define( 'WPPE_LOCK', 'wppe_check_lock' );
@@ -59,6 +61,9 @@ function wppe_defaults() {
 		'cd_auto'    => 'none',
 		'cd_label'   => 'Offer ends in',
 		'cd_expired' => 'This offer has expired',
+		'redirect'      => 'no',
+		'redirect_url'  => '',
+		'redirect_code' => 302,
 	);
 }
 
@@ -158,6 +163,15 @@ function wppe_render_meta_box( $post ) {
 	echo '<p><label for="wppe_expiry_datetime"><strong>Expiry date &amp; time</strong> (' . esc_html( wppe_tz_label() ) . ')</label></p>';
 	echo '<input type="datetime-local" id="wppe_expiry_datetime" name="wppe_expiry_datetime" value="' . esc_attr( wppe_to_input( $value ) ) . '" style="width:100%">';
 	echo '<p class="description">' . esc_html( wppe_action_description() ) . ' Leave empty for no expiry.</p>';
+
+	$redirect = (string) get_post_meta( $post->ID, WPPE_REDIRECT_META, true );
+	$s        = wppe_settings();
+	$default  = ( 'yes' === $s['redirect'] && '' !== $s['redirect_url'] ) ? $s['redirect_url'] : '';
+	echo '<p style="margin-top:12px"><label for="wppe_redirect_url"><strong>Redirect after expiry</strong> (optional)</label></p>';
+	echo '<input type="text" id="wppe_redirect_url" name="wppe_redirect_url" value="' . esc_attr( $redirect ) . '" placeholder="' . esc_attr( $default ? $default : 'https://… or /page/' ) . '" style="width:100%">';
+	echo '<p class="description">' . esc_html( $default
+		? 'Visitors who open this post after it expires go to this URL. Leave empty to use the default (' . $default . ').'
+		: 'Visitors who open this post after it expires go to this URL. Leave empty for no redirect.' ) . '</p>';
 }
 
 function wppe_action_description() {
@@ -188,12 +202,31 @@ add_action( 'save_post', function ( $post_id, $post ) {
 		return;
 	}
 	$value = wppe_parse_input( isset( $_POST['wppe_expiry_datetime'] ) ? sanitize_text_field( wp_unslash( $_POST['wppe_expiry_datetime'] ) ) : '' );
+	wppe_store_expiry( $post_id, $value );
+
+	$redirect = wppe_sanitize_redirect_url( isset( $_POST['wppe_redirect_url'] ) ? wp_unslash( $_POST['wppe_redirect_url'] ) : '' ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized by wppe_sanitize_redirect_url().
+	if ( '' !== $redirect ) {
+		update_post_meta( $post_id, WPPE_REDIRECT_META, $redirect );
+	} else {
+		delete_post_meta( $post_id, WPPE_REDIRECT_META );
+	}
+}, 10, 2 );
+
+/**
+ * Save (or clear) an expiry date. A changed date also forgets the URL the post
+ * had when it last expired, so a re-used post isn't redirected any more.
+ */
+function wppe_store_expiry( $post_id, $value ) {
+	$old = (string) get_post_meta( $post_id, WPPE_META_KEY, true );
 	if ( $value ) {
 		update_post_meta( $post_id, WPPE_META_KEY, $value );
 	} else {
 		delete_post_meta( $post_id, WPPE_META_KEY );
 	}
-}, 10, 2 );
+	if ( $old !== (string) $value ) {
+		delete_post_meta( $post_id, WPPE_PATH_META );
+	}
+}
 
 /* ===========================================================================
  * List column + Quick Edit
@@ -242,10 +275,8 @@ add_action( 'save_post', function ( $post_id, $post ) {
 		return; // Field untouched: keep whatever is stored.
 	}
 	$value = wppe_parse_input( $raw );
-	if ( $value ) {
-		update_post_meta( $post_id, WPPE_META_KEY, $value );
-	} elseif ( '' === trim( $raw ) ) {
-		delete_post_meta( $post_id, WPPE_META_KEY );
+	if ( $value || '' === trim( $raw ) ) {
+		wppe_store_expiry( $post_id, $value );
 	}
 }, 10, 2 );
 
@@ -431,6 +462,15 @@ function wppe_expire_post( $id, $action, $base_term ) {
 	$status = get_post_status( $id );
 	if ( ! $status || 'trash' === $status ) {
 		return;
+	}
+
+	// Remember the public URL before it changes (drafts lose their pretty permalink,
+	// trashed posts get a "__trashed" slug), so visitors can still be redirected.
+	if ( 'publish' === $status ) {
+		$path = wppe_normalize_path( get_permalink( $id ) );
+		if ( '' !== $path ) {
+			update_post_meta( $id, WPPE_PATH_META, $path );
+		}
 	}
 
 	switch ( $action ) {
@@ -627,6 +667,195 @@ JS
 }
 
 /* ===========================================================================
+ * Expired posts on the front end: redirect + "post-expired" body class
+ * ======================================================================== */
+
+/** URL -> lower-case, decoded path without trailing slash ('/' for the home page), or ''. */
+function wppe_normalize_path( $url ) {
+	$path = wp_parse_url( (string) $url, PHP_URL_PATH );
+	if ( null === $path || false === $path ) {
+		return '';
+	}
+	$path = strtolower( rawurldecode( $path ) );
+	$path = untrailingslashit( $path );
+	return '' === $path ? '/' : $path;
+}
+
+/** Has this post's expiry time passed? */
+function wppe_is_expired( $post_id ) {
+	$value = wppe_get_expiry( $post_id );
+	if ( '' === $value ) {
+		return false;
+	}
+	$expires = strtotime( $value . ' ' . wp_timezone_string() );
+	return $expires && $expires <= time();
+}
+
+/**
+ * Clean a redirect target typed by a user: a full http(s) URL or a path on this
+ * site starting with "/". Returns '' when invalid.
+ */
+function wppe_sanitize_redirect_url( $raw ) {
+	$raw = trim( sanitize_text_field( (string) $raw ) );
+	if ( '' === $raw ) {
+		return '';
+	}
+	if ( '/' === $raw[0] && '/' !== substr( $raw, 1, 1 ) ) {
+		return esc_url_raw( home_url( $raw ) ) ? '/' . ltrim( $raw, '/' ) : '';
+	}
+	if ( ! preg_match( '#^https?://#i', $raw ) ) {
+		return '';
+	}
+	return (string) esc_url_raw( $raw, array( 'http', 'https' ) );
+}
+
+/**
+ * Where visitors of an expired post should go, or '' for no redirect.
+ * Order: the post's own URL -> its WPML original's URL -> the default from Settings (if on).
+ */
+function wppe_redirect_target( $post_id ) {
+	$url = (string) get_post_meta( $post_id, WPPE_REDIRECT_META, true );
+
+	if ( '' === $url && wppe_wpml_active() ) {
+		$original = (int) apply_filters( 'wpml_original_element_id', null, $post_id, 'post_' . get_post_type( $post_id ) );
+		if ( $original && $original !== (int) $post_id ) {
+			$url = (string) get_post_meta( $original, WPPE_REDIRECT_META, true );
+		}
+	}
+
+	if ( '' === $url ) {
+		$s = wppe_settings();
+		if ( 'yes' === $s['redirect'] ) {
+			$url = (string) $s['redirect_url'];
+		}
+	}
+
+	if ( '' === $url ) {
+		return '';
+	}
+
+	if ( '/' === $url[0] && '/' !== substr( $url, 1, 1 ) ) {
+		$url = home_url( $url );
+	}
+
+	// Send translated posts to the same page in their own language.
+	if ( wppe_wpml_active() && wp_parse_url( $url, PHP_URL_HOST ) === wp_parse_url( home_url(), PHP_URL_HOST ) ) {
+		$lang = apply_filters( 'wpml_element_language_code', null, array( 'element_id' => $post_id, 'element_type' => get_post_type( $post_id ) ) );
+		if ( $lang ) {
+			$url = (string) apply_filters( 'wpml_permalink', $url, $lang );
+		}
+	}
+
+	return (string) esc_url_raw( apply_filters( 'wppe_redirect_url', $url, $post_id ) );
+}
+
+/**
+ * The expired post the current request is about, or 0. Covers:
+ * - a single post that is still viewable but past its expiry (e.g. moved to a category,
+ *   or the next check hasn't run yet);
+ * - a 404 at the URL an expired post used to have (switched to Draft/Private or trashed).
+ */
+function wppe_current_expired_post() {
+	static $found = null;
+	if ( null !== $found ) {
+		return $found;
+	}
+	$found = 0;
+
+	if ( is_singular() ) {
+		$id = (int) get_queried_object_id();
+		if ( $id && wppe_is_enabled_type( get_post_type( $id ) ) && wppe_is_expired( $id ) ) {
+			$found = $id;
+		}
+	} elseif ( is_404() ) {
+		$request = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+		$path    = wppe_normalize_path( $request );
+		if ( '' !== $path && '/' !== $path ) {
+			global $wpdb;
+			$id = (int) $wpdb->get_var( $wpdb->prepare(
+				"SELECT pm.post_id FROM {$wpdb->postmeta} pm INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE pm.meta_key = %s AND pm.meta_value = %s AND p.post_status <> 'publish' ORDER BY pm.post_id DESC LIMIT 1",
+				WPPE_PATH_META,
+				$path
+			) );
+			if ( $id && wppe_is_enabled_type( get_post_type( $id ) ) ) {
+				$found = $id;
+			}
+		}
+	}
+	return $found;
+}
+
+// Priority 1: before WordPress's own 404 "guess the URL" redirect.
+add_action( 'template_redirect', function () {
+	if ( is_preview() || is_feed() || is_robots() ) {
+		return;
+	}
+	$post_id = wppe_current_expired_post();
+	if ( ! $post_id ) {
+		return;
+	}
+	$target = wppe_redirect_target( $post_id );
+	if ( '' === $target ) {
+		return;
+	}
+	$request = isset( $_SERVER['REQUEST_URI'] ) ? esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+	if ( wppe_normalize_path( $target ) === wppe_normalize_path( $request ) && wp_parse_url( $target, PHP_URL_HOST ) === wp_parse_url( home_url(), PHP_URL_HOST ) ) {
+		return; // Never redirect a page to itself.
+	}
+	$s    = wppe_settings();
+	$code = 301 === (int) $s['redirect_code'] ? 301 : 302;
+	nocache_headers();
+	wp_redirect( $target, $code, 'WP Pro Post Expiry' ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- target is set by editors/admins and may be another site.
+	exit;
+}, 1 );
+
+add_filter( 'body_class', function ( $classes ) {
+	if ( wppe_current_expired_post() ) {
+		$classes[] = 'post-expired';
+	}
+	return $classes;
+} );
+
+/**
+ * For a post that hasn't expired yet: add the body class (and redirect, if set) the
+ * moment it expires — also on pages served later from a page cache.
+ */
+add_action( 'wp_enqueue_scripts', function () {
+	if ( ! is_singular() || is_preview() ) {
+		return;
+	}
+	$id = (int) get_queried_object_id();
+	if ( ! $id || ! wppe_is_enabled_type( get_post_type( $id ) ) || wppe_is_expired( $id ) ) {
+		return;
+	}
+	$value = wppe_get_expiry( $id );
+	if ( '' === $value ) {
+		return;
+	}
+	$expires = strtotime( $value . ' ' . wp_timezone_string() );
+	if ( ! $expires ) {
+		return;
+	}
+	$data = array(
+		'expires' => $expires * 1000,
+		'url'     => wppe_redirect_target( $id ),
+	);
+	wp_register_script( 'wppe-expiry', false, array(), WPPE_VERSION, true );
+	wp_enqueue_script( 'wppe-expiry' );
+	wp_add_inline_script( 'wppe-expiry', 'var wppeExpiry=' . wp_json_encode( $data ) . ';' . <<<'JS'
+(function (d) {
+	function expire() {
+		document.body.classList.add('post-expired');
+		if (d.url) { window.location.replace(d.url); }
+	}
+	var left = d.expires - Date.now();
+	if (left <= 0) { expire(); } else if (left < 2147483647) { setTimeout(expire, left); }
+})(wppeExpiry);
+JS
+	);
+} );
+
+/* ===========================================================================
  * Settings page (Settings -> Post Expiry)
  * ======================================================================== */
 add_action( 'admin_menu', function () {
@@ -674,6 +903,13 @@ function wppe_sanitize_settings( $input ) {
 	$out['cd_auto']    = in_array( $cd_auto, array( 'none', 'before', 'after' ), true ) ? $cd_auto : 'none';
 	$out['cd_label']   = sanitize_text_field( $input['cd_label'] ?? '' );
 	$out['cd_expired'] = sanitize_text_field( $input['cd_expired'] ?? '' );
+
+	$out['redirect']      = ( isset( $input['redirect'] ) && 'yes' === $input['redirect'] ) ? 'yes' : 'no';
+	$out['redirect_url']  = wppe_sanitize_redirect_url( $input['redirect_url'] ?? '' );
+	$out['redirect_code'] = 301 === (int) ( $input['redirect_code'] ?? 302 ) ? 301 : 302;
+	if ( 'yes' === $out['redirect'] && '' === $out['redirect_url'] ) {
+		add_settings_error( WPPE_OPTION, 'wppe_no_redirect_url', 'Redirect is on but no valid URL was entered — enter a full URL (https://…) or a path on this site (/page/). Until then only posts with their own redirect URL are redirected.', 'warning' );
+	}
 
 	if ( empty( $out['post_types'] ) ) {
 		add_settings_error( WPPE_OPTION, 'wppe_no_types', 'No post types selected — nothing will expire until you pick at least one.', 'warning' );
@@ -760,6 +996,27 @@ function wppe_render_settings_page() {
 								?>
 								<p class="description">With WPML, translated posts get the translated version of this category where one exists; otherwise this one.</p>
 							</div>
+						</fieldset>
+					</td>
+				</tr>
+
+				<tr>
+					<th scope="row">Redirect visitors</th>
+					<td>
+						<fieldset>
+							<p style="margin-top:0;color:#646970">Also applies whichever action you chose above — the post is still set to Draft / Private / Trash / moved to the category.</p>
+							<label style="display:block;margin-bottom:6px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect]" value="no" <?php checked( $s['redirect'], 'no' ); ?>> <strong>Off</strong> — only posts that have their own "Redirect after expiry" URL are redirected</label>
+							<label style="display:block;margin-bottom:6px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect]" value="yes" <?php checked( $s['redirect'], 'yes' ); ?>> <strong>On</strong> — send visitors of every expired post to:</label>
+							<div style="margin:2px 0 0 24px">
+								<input type="text" class="regular-text" name="<?php echo esc_attr( $name ); ?>[redirect_url]" value="<?php echo esc_attr( $s['redirect_url'] ); ?>" placeholder="https://… or /special-offers/">
+								<p class="description">A full URL or a path on this site starting with <code>/</code>. Each post can override it with its own URL in the Post Expiry box. With WPML, visitors go to the same page in their language.</p>
+								<p style="margin:8px 0 0">
+									<label style="margin-right:16px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect_code]" value="302" <?php checked( (int) $s['redirect_code'], 302 ); ?>> 302 Temporary</label>
+									<label><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect_code]" value="301" <?php checked( (int) $s['redirect_code'], 301 ); ?>> 301 Permanent</label>
+								</p>
+								<p class="description">Use 302 if you may re-use expired posts (browsers remember 301 redirects).</p>
+							</div>
+							<p class="description" style="margin-top:10px">Expired posts' pages also get the <code>post-expired</code> body class (also the 404 page at the post's old address), for styling. To view an expired post without being redirected, use <strong>Preview</strong>.</p>
 						</fieldset>
 					</td>
 				</tr>
