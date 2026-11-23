@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.0 — 2026-11-23
+- Redirect target is now picked from a list of published pages (Settings and the Post Expiry box). "Custom URL…" is still available for any other address.
+- Per post: "Default" (use Settings), a page, "No redirect", or a custom URL.
+- With WPML, visitors go to the translation of the chosen page in their language.
+
 ## 1.3.1 — 2026-11-23
 - Fix: with redirect off, the old address of a drafted/trashed post now shows the 404 page (with the `post-expired` body class) instead of WordPress guessing a similar post such as "…-2".
 

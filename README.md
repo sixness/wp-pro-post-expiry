@@ -4,7 +4,7 @@ WordPress plugin by **WP Pro Design**. Give posts an expiry date & time; when it
 
 - Set the expiry on the edit screen, in **Quick Edit**, and see it in an **Expires** column.
 - After expiry: **Draft**, **Private**, **Trash**, or **move to a category** (all other categories removed, post stays published).
-- **Redirect after expiry** to any page (default in Settings or per post), on top of the action above. 301 or 302.
+- **Redirect after expiry** to a page picked from your published pages, or a custom URL (default in Settings or per post), on top of the action above. 301 or 302.
 - Adds a **`post-expired` body class** to expired posts' pages.
 - Choose which **post types** it applies to.
 - **WPML**: translations can expire together with the original.

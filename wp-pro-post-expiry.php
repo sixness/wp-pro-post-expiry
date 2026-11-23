@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       WP Pro Post Expiry
  * Description:       Give posts an expiry date & time (edit screen, list column and Quick Edit). When a post expires it is switched to Draft, Private, moved to Trash, or moved into a chosen category — optionally together with all its WPML translations. Can redirect visitors from expired posts to a page of your choice and adds a "post-expired" body class. Includes a live countdown ([wppe_countdown] shortcode or automatic).
- * Version:           1.3.1
+ * Version:           1.4.0
  * Last Updated:      2026-11-23
  * Requires at least: 6.0
  * Requires PHP:      7.4
@@ -17,12 +17,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WPPE_VERSION', '1.3.1' );
+define( 'WPPE_VERSION', '1.4.0' );
 define( 'WPPE_GITHUB_REPO', 'sixness/wp-pro-post-expiry' );
 define( 'WPPE_UPDATED', '2026-11-23' );
 define( 'WPPE_OPTION', 'wppe_settings' );
 define( 'WPPE_META_KEY', '_wppe_expiry_datetime' );
-define( 'WPPE_REDIRECT_META', '_wppe_redirect_url' ); // Per-post redirect target (optional).
+define( 'WPPE_REDIRECT_META', '_wppe_redirect_url' ); // Per-post custom redirect URL (optional).
+define( 'WPPE_REDIRECT_PAGE_META', '_wppe_redirect_page' ); // Per-post redirect page ID; -1 = no redirect.
 define( 'WPPE_PATH_META', '_wppe_expired_path' );    // URL path the post had when it expired.
 define( 'WPPE_LEGACY_META_KEY', 'hs_expiry_datetime' ); // Used by the old "Special Offers expiry" snippet.
 define( 'WPPE_CRON_HOOK', 'wppe_check_expired' );
@@ -62,6 +63,7 @@ function wppe_defaults() {
 		'cd_label'   => 'Offer ends in',
 		'cd_expired' => 'This offer has expired',
 		'redirect'      => 'no',
+		'redirect_page' => 0,
 		'redirect_url'  => '',
 		'redirect_code' => 302,
 	);
@@ -164,14 +166,18 @@ function wppe_render_meta_box( $post ) {
 	echo '<input type="datetime-local" id="wppe_expiry_datetime" name="wppe_expiry_datetime" value="' . esc_attr( wppe_to_input( $value ) ) . '" style="width:100%">';
 	echo '<p class="description">' . esc_html( wppe_action_description() ) . ' Leave empty for no expiry.</p>';
 
-	$redirect = (string) get_post_meta( $post->ID, WPPE_REDIRECT_META, true );
-	$s        = wppe_settings();
-	$default  = ( 'yes' === $s['redirect'] && '' !== $s['redirect_url'] ) ? $s['redirect_url'] : '';
-	echo '<p style="margin-top:12px"><label for="wppe_redirect_url"><strong>Redirect after expiry</strong> (optional)</label></p>';
-	echo '<input type="text" id="wppe_redirect_url" name="wppe_redirect_url" value="' . esc_attr( $redirect ) . '" placeholder="' . esc_attr( $default ? $default : 'https://… or /page/' ) . '" style="width:100%">';
-	echo '<p class="description">' . esc_html( $default
-		? 'Visitors who open this post after it expires go to this URL. Leave empty to use the default (' . $default . ').'
-		: 'Visitors who open this post after it expires go to this URL. Leave empty for no redirect.' ) . '</p>';
+	$page    = (int) get_post_meta( $post->ID, WPPE_REDIRECT_PAGE_META, true );
+	$url     = (string) get_post_meta( $post->ID, WPPE_REDIRECT_META, true );
+	$current = -1 === $page ? 'none' : ( $page > 0 ? (string) $page : ( '' !== $url ? 'custom' : '' ) );
+	$default = wppe_default_redirect_label();
+
+	echo '<p style="margin-top:12px"><label for="wppe_redirect_page"><strong>Redirect after expiry</strong></label></p>';
+	wppe_redirect_page_dropdown( 'wppe_redirect_page', 'wppe_redirect_page', $current, array(
+		''     => $default ? 'Default: ' . $default : 'Default (no redirect)',
+		'none' => 'No redirect',
+	) );
+	echo '<input type="text" id="wppe_redirect_url" name="wppe_redirect_url" value="' . esc_attr( $url ) . '" placeholder="https://… or /page/" style="width:100%;margin-top:6px"' . ( 'custom' === $current ? '' : ' hidden' ) . '>';
+	echo '<p class="description">Visitors who open this post after it expires go to this page. Default comes from Settings &rsaquo; Post Expiry.</p>';
 }
 
 function wppe_action_description() {
@@ -204,11 +210,20 @@ add_action( 'save_post', function ( $post_id, $post ) {
 	$value = wppe_parse_input( isset( $_POST['wppe_expiry_datetime'] ) ? sanitize_text_field( wp_unslash( $_POST['wppe_expiry_datetime'] ) ) : '' );
 	wppe_store_expiry( $post_id, $value );
 
-	$redirect = wppe_sanitize_redirect_url( isset( $_POST['wppe_redirect_url'] ) ? wp_unslash( $_POST['wppe_redirect_url'] ) : '' ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized by wppe_sanitize_redirect_url().
-	if ( '' !== $redirect ) {
-		update_post_meta( $post_id, WPPE_REDIRECT_META, $redirect );
-	} else {
-		delete_post_meta( $post_id, WPPE_REDIRECT_META );
+	if ( isset( $_POST['wppe_redirect_page'] ) ) {
+		$choice = sanitize_key( wp_unslash( $_POST['wppe_redirect_page'] ) );
+		$url    = 'custom' === $choice ? wppe_sanitize_redirect_url( isset( $_POST['wppe_redirect_url'] ) ? wp_unslash( $_POST['wppe_redirect_url'] ) : '' ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized by wppe_sanitize_redirect_url().
+		$page   = 'none' === $choice ? -1 : wppe_valid_page_id( $choice );
+		if ( $page ) {
+			update_post_meta( $post_id, WPPE_REDIRECT_PAGE_META, $page );
+		} else {
+			delete_post_meta( $post_id, WPPE_REDIRECT_PAGE_META );
+		}
+		if ( '' !== $url ) {
+			update_post_meta( $post_id, WPPE_REDIRECT_META, $url );
+		} else {
+			delete_post_meta( $post_id, WPPE_REDIRECT_META );
+		}
 	}
 }, 10, 2 );
 
@@ -709,43 +724,143 @@ function wppe_sanitize_redirect_url( $raw ) {
 	return (string) esc_url_raw( $raw, array( 'http', 'https' ) );
 }
 
+/** A published page's ID from a form value, or 0. */
+function wppe_valid_page_id( $value ) {
+	$id = absint( $value );
+	return ( $id && 'page' === get_post_type( $id ) && 'publish' === get_post_status( $id ) ) ? $id : 0;
+}
+
 /**
- * Where visitors of an expired post should go, or '' for no redirect.
- * Order: the post's own URL -> its WPML original's URL -> the default from Settings (if on).
+ * Page dropdown (published pages only) with extra options first and "Custom URL…" last.
+ * A small script shows the URL field next to it when "Custom URL…" is picked.
  */
-function wppe_redirect_target( $post_id ) {
-	$url = (string) get_post_meta( $post_id, WPPE_REDIRECT_META, true );
-
-	if ( '' === $url && wppe_wpml_active() ) {
-		$original = (int) apply_filters( 'wpml_original_element_id', null, $post_id, 'post_' . get_post_type( $post_id ) );
-		if ( $original && $original !== (int) $post_id ) {
-			$url = (string) get_post_meta( $original, WPPE_REDIRECT_META, true );
-		}
+function wppe_redirect_page_dropdown( $name, $id, $selected, $extra ) {
+	$html = wp_dropdown_pages( array(
+		'name'        => $name,
+		'id'          => $id,
+		'selected'    => is_numeric( $selected ) ? (int) $selected : 0,
+		'post_status' => 'publish',
+		'echo'        => 0,
+	) );
+	$first = '';
+	foreach ( $extra as $value => $label ) {
+		$first .= '<option value="' . esc_attr( $value ) . '"' . selected( (string) $selected, (string) $value, false ) . '>' . esc_html( $label ) . '</option>';
 	}
-
-	if ( '' === $url ) {
-		$s = wppe_settings();
-		if ( 'yes' === $s['redirect'] ) {
-			$url = (string) $s['redirect_url'];
-		}
+	$custom = '<option value="custom"' . selected( $selected, 'custom', false ) . '>Custom URL…</option>';
+	if ( '' === $html ) { // No published pages.
+		$html = '<select name="' . esc_attr( $name ) . '" id="' . esc_attr( $id ) . '"></select>';
 	}
+	$html = preg_replace( '/(<select[^>]*>)/', '$1' . $first, $html, 1 );
+	$html = str_replace( '</select>', $custom . '</select>', $html );
+	$html = str_replace( '<select ', '<select style="max-width:100%" ', $html );
+	echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- built from wp_dropdown_pages() and escaped parts.
+	?>
+	<script>
+	(function () {
+		var sel = document.getElementById(<?php echo wp_json_encode( $id ); ?>);
+		if (!sel) { return; }
+		var field = sel.parentNode.querySelector('input[type="text"][name$="redirect_url"], input[type="text"][name$="[redirect_url]"]');
+		function sync() { if (field) { field.hidden = sel.value !== 'custom'; } }
+		sel.addEventListener('change', sync);
+		document.addEventListener('DOMContentLoaded', function () {
+			field = sel.parentNode.querySelector('input[type="text"][name$="redirect_url"], input[type="text"][name$="[redirect_url]"]');
+			sync();
+		});
+	})();
+	</script>
+	<?php
+}
 
-	if ( '' === $url ) {
+/** Human label of the default redirect from Settings, or '' when it's off. */
+function wppe_default_redirect_label() {
+	$s = wppe_settings();
+	if ( 'yes' !== $s['redirect'] ) {
 		return '';
 	}
+	$page = wppe_valid_page_id( $s['redirect_page'] );
+	if ( $page ) {
+		return get_the_title( $page );
+	}
+	return (string) $s['redirect_url'];
+}
 
+/** URL of a published page, in the given post's WPML language when there's a translation. */
+function wppe_page_url( $page_id, $post_id ) {
+	$page_id = wppe_valid_page_id( $page_id );
+	if ( ! $page_id ) {
+		return '';
+	}
+	if ( wppe_wpml_active() ) {
+		$lang = apply_filters( 'wpml_element_language_code', null, array( 'element_id' => $post_id, 'element_type' => get_post_type( $post_id ) ) );
+		if ( $lang ) {
+			$translated = (int) apply_filters( 'wpml_object_id', $page_id, 'page', true, $lang );
+			if ( $translated && 'publish' === get_post_status( $translated ) ) {
+				$page_id = $translated;
+			}
+		}
+	}
+	return (string) get_permalink( $page_id );
+}
+
+/** Custom URL typed by a user -> absolute URL, translated with WPML for internal links. */
+function wppe_custom_url( $url, $post_id ) {
 	if ( '/' === $url[0] && '/' !== substr( $url, 1, 1 ) ) {
 		$url = home_url( $url );
 	}
-
-	// Send translated posts to the same page in their own language.
 	if ( wppe_wpml_active() && wp_parse_url( $url, PHP_URL_HOST ) === wp_parse_url( home_url(), PHP_URL_HOST ) ) {
 		$lang = apply_filters( 'wpml_element_language_code', null, array( 'element_id' => $post_id, 'element_type' => get_post_type( $post_id ) ) );
 		if ( $lang ) {
 			$url = (string) apply_filters( 'wpml_permalink', $url, $lang );
 		}
 	}
+	return $url;
+}
 
+/**
+ * Where visitors of an expired post should go, or '' for no redirect.
+ * Order: the post's own choice -> its WPML original's choice -> the default from Settings (if on).
+ * A choice is a page (preferred) or a custom URL; "No redirect" on the post stops here.
+ */
+function wppe_redirect_target( $post_id ) {
+	$sources = array( (int) $post_id );
+	if ( wppe_wpml_active() ) {
+		$original = (int) apply_filters( 'wpml_original_element_id', null, $post_id, 'post_' . get_post_type( $post_id ) );
+		if ( $original && $original !== (int) $post_id ) {
+			$sources[] = $original;
+		}
+	}
+
+	$url = '';
+	foreach ( $sources as $source ) {
+		$page = (int) get_post_meta( $source, WPPE_REDIRECT_PAGE_META, true );
+		if ( -1 === $page ) {
+			return '';
+		}
+		if ( $page > 0 ) {
+			$url = wppe_page_url( $page, $post_id );
+		}
+		if ( '' === $url ) {
+			$custom = (string) get_post_meta( $source, WPPE_REDIRECT_META, true );
+			$url    = '' !== $custom ? wppe_custom_url( $custom, $post_id ) : '';
+		}
+		if ( '' !== $url ) {
+			break;
+		}
+	}
+
+	if ( '' === $url ) {
+		$s = wppe_settings();
+		if ( 'yes' === $s['redirect'] ) {
+			$url = wppe_page_url( $s['redirect_page'], $post_id );
+			if ( '' === $url && '' !== (string) $s['redirect_url'] ) {
+				$url = wppe_custom_url( (string) $s['redirect_url'], $post_id );
+			}
+		}
+	}
+
+	if ( '' === $url ) {
+		return '';
+	}
 	return (string) esc_url_raw( apply_filters( 'wppe_redirect_url', $url, $post_id ) );
 }
 
@@ -909,10 +1024,12 @@ function wppe_sanitize_settings( $input ) {
 	$out['cd_expired'] = sanitize_text_field( $input['cd_expired'] ?? '' );
 
 	$out['redirect']      = ( isset( $input['redirect'] ) && 'yes' === $input['redirect'] ) ? 'yes' : 'no';
-	$out['redirect_url']  = wppe_sanitize_redirect_url( $input['redirect_url'] ?? '' );
+	$choice               = sanitize_key( $input['redirect_page'] ?? '' );
+	$out['redirect_page'] = 'custom' === $choice ? 0 : wppe_valid_page_id( $choice );
+	$out['redirect_url']  = 'custom' === $choice ? wppe_sanitize_redirect_url( $input['redirect_url'] ?? '' ) : '';
 	$out['redirect_code'] = 301 === (int) ( $input['redirect_code'] ?? 302 ) ? 301 : 302;
-	if ( 'yes' === $out['redirect'] && '' === $out['redirect_url'] ) {
-		add_settings_error( WPPE_OPTION, 'wppe_no_redirect_url', 'Redirect is on but no valid URL was entered — enter a full URL (https://…) or a path on this site (/page/). Until then only posts with their own redirect URL are redirected.', 'warning' );
+	if ( 'yes' === $out['redirect'] && ! $out['redirect_page'] && '' === $out['redirect_url'] ) {
+		add_settings_error( WPPE_OPTION, 'wppe_no_redirect_url', 'Redirect is on but no page was chosen (or the custom URL isn\'t valid). Until then only posts with their own redirect page are redirected.', 'warning' );
 	}
 
 	if ( empty( $out['post_types'] ) ) {
@@ -1009,11 +1126,15 @@ function wppe_render_settings_page() {
 					<td>
 						<fieldset>
 							<p style="margin-top:0;color:#646970">Also applies whichever action you chose above — the post is still set to Draft / Private / Trash / moved to the category.</p>
-							<label style="display:block;margin-bottom:6px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect]" value="no" <?php checked( $s['redirect'], 'no' ); ?>> <strong>Off</strong> — only posts that have their own "Redirect after expiry" URL are redirected</label>
+							<label style="display:block;margin-bottom:6px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect]" value="no" <?php checked( $s['redirect'], 'no' ); ?>> <strong>Off</strong> — only posts that have their own "Redirect after expiry" page are redirected</label>
 							<label style="display:block;margin-bottom:6px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect]" value="yes" <?php checked( $s['redirect'], 'yes' ); ?>> <strong>On</strong> — send visitors of every expired post to:</label>
 							<div style="margin:2px 0 0 24px">
-								<input type="text" class="regular-text" name="<?php echo esc_attr( $name ); ?>[redirect_url]" value="<?php echo esc_attr( $s['redirect_url'] ); ?>" placeholder="https://… or /special-offers/">
-								<p class="description">A full URL or a path on this site starting with <code>/</code>. Each post can override it with its own URL in the Post Expiry box. With WPML, visitors go to the same page in their language.</p>
+								<?php
+								$current = wppe_valid_page_id( $s['redirect_page'] ) ? (string) (int) $s['redirect_page'] : ( '' !== (string) $s['redirect_url'] ? 'custom' : '0' );
+								wppe_redirect_page_dropdown( $name . '[redirect_page]', 'wppe_redirect_page', $current, array( '0' => '— Select a page —' ) );
+								?>
+								<input type="text" class="regular-text" name="<?php echo esc_attr( $name ); ?>[redirect_url]" value="<?php echo esc_attr( $s['redirect_url'] ); ?>" placeholder="https://… or /special-offers/" style="margin-top:6px"<?php echo 'custom' === $current ? '' : ' hidden'; ?>>
+								<p class="description">Lists published pages. Pick "Custom URL…" for any other address. Each post can choose its own page in the Post Expiry box. With WPML, visitors go to the translation of the page in their language.</p>
 								<p style="margin:8px 0 0">
 									<label style="margin-right:16px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect_code]" value="302" <?php checked( (int) $s['redirect_code'], 302 ); ?>> 302 Temporary</label>
 									<label><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect_code]" value="301" <?php checked( (int) $s['redirect_code'], 301 ); ?>> 301 Permanent</label>
