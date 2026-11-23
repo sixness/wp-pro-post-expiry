@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.0 — 2026-11-23
+- Redirect is now set per post only (Post Expiry box on the edit screen): "No redirect", a published page, or a custom URL. The Redirect section was removed from Settings.
+- Redirects are 302 (temporary). Developers can switch to 301 with the `wppe_redirect_status` filter.
+
 ## 1.4.1 — 2026-11-23
 - Removed the "Last updated" text from the plugin's row on the Plugins page.
 

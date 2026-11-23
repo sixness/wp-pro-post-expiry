@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       WP Pro Post Expiry
  * Description:       Give posts an expiry date & time (edit screen, list column and Quick Edit). When a post expires it is switched to Draft, Private, moved to Trash, or moved into a chosen category — optionally together with all its WPML translations. Can redirect visitors from expired posts to a page of your choice and adds a "post-expired" body class. Includes a live countdown ([wppe_countdown] shortcode or automatic).
- * Version:           1.4.1
+ * Version:           1.5.0
  * Last Updated:      2026-11-23
  * Requires at least: 6.0
  * Requires PHP:      7.4
@@ -17,13 +17,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WPPE_VERSION', '1.4.1' );
+define( 'WPPE_VERSION', '1.5.0' );
 define( 'WPPE_GITHUB_REPO', 'sixness/wp-pro-post-expiry' );
 define( 'WPPE_UPDATED', '2026-11-23' );
 define( 'WPPE_OPTION', 'wppe_settings' );
 define( 'WPPE_META_KEY', '_wppe_expiry_datetime' );
 define( 'WPPE_REDIRECT_META', '_wppe_redirect_url' ); // Per-post custom redirect URL (optional).
-define( 'WPPE_REDIRECT_PAGE_META', '_wppe_redirect_page' ); // Per-post redirect page ID; -1 = no redirect.
+define( 'WPPE_REDIRECT_PAGE_META', '_wppe_redirect_page' ); // Per-post redirect page ID.
 define( 'WPPE_PATH_META', '_wppe_expired_path' );    // URL path the post had when it expired.
 define( 'WPPE_LEGACY_META_KEY', 'hs_expiry_datetime' ); // Used by the old "Special Offers expiry" snippet.
 define( 'WPPE_CRON_HOOK', 'wppe_check_expired' );
@@ -62,10 +62,6 @@ function wppe_defaults() {
 		'cd_auto'    => 'none',
 		'cd_label'   => 'Offer ends in',
 		'cd_expired' => 'This offer has expired',
-		'redirect'      => 'no',
-		'redirect_page' => 0,
-		'redirect_url'  => '',
-		'redirect_code' => 302,
 	);
 }
 
@@ -168,16 +164,12 @@ function wppe_render_meta_box( $post ) {
 
 	$page    = (int) get_post_meta( $post->ID, WPPE_REDIRECT_PAGE_META, true );
 	$url     = (string) get_post_meta( $post->ID, WPPE_REDIRECT_META, true );
-	$current = -1 === $page ? 'none' : ( $page > 0 ? (string) $page : ( '' !== $url ? 'custom' : '' ) );
-	$default = wppe_default_redirect_label();
+	$current = $page > 0 ? (string) $page : ( '' !== $url ? 'custom' : '' );
 
 	echo '<p style="margin-top:12px"><label for="wppe_redirect_page"><strong>Redirect after expiry</strong></label></p>';
-	wppe_redirect_page_dropdown( 'wppe_redirect_page', 'wppe_redirect_page', $current, array(
-		''     => $default ? 'Default: ' . $default : 'Default (no redirect)',
-		'none' => 'No redirect',
-	) );
+	wppe_redirect_page_dropdown( 'wppe_redirect_page', 'wppe_redirect_page', $current, array( '' => '— No redirect —' ) );
 	echo '<input type="text" id="wppe_redirect_url" name="wppe_redirect_url" value="' . esc_attr( $url ) . '" placeholder="https://… or /page/" style="width:100%;margin-top:6px"' . ( 'custom' === $current ? '' : ' hidden' ) . '>';
-	echo '<p class="description">Visitors who open this post after it expires go to this page. Default comes from Settings &rsaquo; Post Expiry.</p>';
+	echo '<p class="description">Visitors who open this post after it expires are sent to this page (302 redirect). The action above still runs. Lists published pages; pick "Custom URL…" for any other address.</p>';
 }
 
 function wppe_action_description() {
@@ -213,7 +205,7 @@ add_action( 'save_post', function ( $post_id, $post ) {
 	if ( isset( $_POST['wppe_redirect_page'] ) ) {
 		$choice = sanitize_key( wp_unslash( $_POST['wppe_redirect_page'] ) );
 		$url    = 'custom' === $choice ? wppe_sanitize_redirect_url( isset( $_POST['wppe_redirect_url'] ) ? wp_unslash( $_POST['wppe_redirect_url'] ) : '' ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- sanitized by wppe_sanitize_redirect_url().
-		$page   = 'none' === $choice ? -1 : wppe_valid_page_id( $choice );
+		$page   = wppe_valid_page_id( $choice );
 		if ( $page ) {
 			update_post_meta( $post_id, WPPE_REDIRECT_PAGE_META, $page );
 		} else {
@@ -771,19 +763,6 @@ function wppe_redirect_page_dropdown( $name, $id, $selected, $extra ) {
 	<?php
 }
 
-/** Human label of the default redirect from Settings, or '' when it's off. */
-function wppe_default_redirect_label() {
-	$s = wppe_settings();
-	if ( 'yes' !== $s['redirect'] ) {
-		return '';
-	}
-	$page = wppe_valid_page_id( $s['redirect_page'] );
-	if ( $page ) {
-		return get_the_title( $page );
-	}
-	return (string) $s['redirect_url'];
-}
-
 /** URL of a published page, in the given post's WPML language when there's a translation. */
 function wppe_page_url( $page_id, $post_id ) {
 	$page_id = wppe_valid_page_id( $page_id );
@@ -818,8 +797,8 @@ function wppe_custom_url( $url, $post_id ) {
 
 /**
  * Where visitors of an expired post should go, or '' for no redirect.
- * Order: the post's own choice -> its WPML original's choice -> the default from Settings (if on).
- * A choice is a page (preferred) or a custom URL; "No redirect" on the post stops here.
+ * Set per post in the Post Expiry box: a page (preferred) or a custom URL.
+ * WPML translations without their own choice use the original's.
  */
 function wppe_redirect_target( $post_id ) {
 	$sources = array( (int) $post_id );
@@ -833,9 +812,6 @@ function wppe_redirect_target( $post_id ) {
 	$url = '';
 	foreach ( $sources as $source ) {
 		$page = (int) get_post_meta( $source, WPPE_REDIRECT_PAGE_META, true );
-		if ( -1 === $page ) {
-			return '';
-		}
 		if ( $page > 0 ) {
 			$url = wppe_page_url( $page, $post_id );
 		}
@@ -845,16 +821,6 @@ function wppe_redirect_target( $post_id ) {
 		}
 		if ( '' !== $url ) {
 			break;
-		}
-	}
-
-	if ( '' === $url ) {
-		$s = wppe_settings();
-		if ( 'yes' === $s['redirect'] ) {
-			$url = wppe_page_url( $s['redirect_page'], $post_id );
-			if ( '' === $url && '' !== (string) $s['redirect_url'] ) {
-				$url = wppe_custom_url( (string) $s['redirect_url'], $post_id );
-			}
 		}
 	}
 
@@ -921,8 +887,7 @@ add_action( 'template_redirect', function () {
 	if ( wppe_normalize_path( $target ) === wppe_normalize_path( $request ) && wp_parse_url( $target, PHP_URL_HOST ) === wp_parse_url( home_url(), PHP_URL_HOST ) ) {
 		return; // Never redirect a page to itself.
 	}
-	$s    = wppe_settings();
-	$code = 301 === (int) $s['redirect_code'] ? 301 : 302;
+	$code = 301 === (int) apply_filters( 'wppe_redirect_status', 302, $post_id ) ? 301 : 302;
 	nocache_headers();
 	wp_redirect( $target, $code, 'WP Pro Post Expiry' ); // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- target is set by editors/admins and may be another site.
 	exit;
@@ -1016,14 +981,6 @@ function wppe_sanitize_settings( $input ) {
 	$out['cd_label']   = sanitize_text_field( $input['cd_label'] ?? '' );
 	$out['cd_expired'] = sanitize_text_field( $input['cd_expired'] ?? '' );
 
-	$out['redirect']      = ( isset( $input['redirect'] ) && 'yes' === $input['redirect'] ) ? 'yes' : 'no';
-	$choice               = sanitize_key( $input['redirect_page'] ?? '' );
-	$out['redirect_page'] = 'custom' === $choice ? 0 : wppe_valid_page_id( $choice );
-	$out['redirect_url']  = 'custom' === $choice ? wppe_sanitize_redirect_url( $input['redirect_url'] ?? '' ) : '';
-	$out['redirect_code'] = 301 === (int) ( $input['redirect_code'] ?? 302 ) ? 301 : 302;
-	if ( 'yes' === $out['redirect'] && ! $out['redirect_page'] && '' === $out['redirect_url'] ) {
-		add_settings_error( WPPE_OPTION, 'wppe_no_redirect_url', 'Redirect is on but no page was chosen (or the custom URL isn\'t valid). Until then only posts with their own redirect page are redirected.', 'warning' );
-	}
 
 	if ( empty( $out['post_types'] ) ) {
 		add_settings_error( WPPE_OPTION, 'wppe_no_types', 'No post types selected — nothing will expire until you pick at least one.', 'warning' );
@@ -1110,31 +1067,6 @@ function wppe_render_settings_page() {
 								?>
 								<p class="description">With WPML, translated posts get the translated version of this category where one exists; otherwise this one.</p>
 							</div>
-						</fieldset>
-					</td>
-				</tr>
-
-				<tr>
-					<th scope="row">Redirect visitors</th>
-					<td>
-						<fieldset>
-							<p style="margin-top:0;color:#646970">Also applies whichever action you chose above — the post is still set to Draft / Private / Trash / moved to the category.</p>
-							<label style="display:block;margin-bottom:6px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect]" value="no" <?php checked( $s['redirect'], 'no' ); ?>> <strong>Off</strong> — only posts that have their own "Redirect after expiry" page are redirected</label>
-							<label style="display:block;margin-bottom:6px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect]" value="yes" <?php checked( $s['redirect'], 'yes' ); ?>> <strong>On</strong> — send visitors of every expired post to:</label>
-							<div style="margin:2px 0 0 24px">
-								<?php
-								$current = wppe_valid_page_id( $s['redirect_page'] ) ? (string) (int) $s['redirect_page'] : ( '' !== (string) $s['redirect_url'] ? 'custom' : '0' );
-								wppe_redirect_page_dropdown( $name . '[redirect_page]', 'wppe_redirect_page', $current, array( '0' => '— Select a page —' ) );
-								?>
-								<input type="text" class="regular-text" name="<?php echo esc_attr( $name ); ?>[redirect_url]" value="<?php echo esc_attr( $s['redirect_url'] ); ?>" placeholder="https://… or /special-offers/" style="margin-top:6px"<?php echo 'custom' === $current ? '' : ' hidden'; ?>>
-								<p class="description">Lists published pages. Pick "Custom URL…" for any other address. Each post can choose its own page in the Post Expiry box. With WPML, visitors go to the translation of the page in their language.</p>
-								<p style="margin:8px 0 0">
-									<label style="margin-right:16px"><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect_code]" value="302" <?php checked( (int) $s['redirect_code'], 302 ); ?>> 302 Temporary</label>
-									<label><input type="radio" name="<?php echo esc_attr( $name ); ?>[redirect_code]" value="301" <?php checked( (int) $s['redirect_code'], 301 ); ?>> 301 Permanent</label>
-								</p>
-								<p class="description">Use 302 if you may re-use expired posts (browsers remember 301 redirects).</p>
-							</div>
-							<p class="description" style="margin-top:10px">Expired posts' pages also get the <code>post-expired</code> body class (also the 404 page at the post's old address), for styling. To view an expired post without being redirected, use <strong>Preview</strong>.</p>
 						</fieldset>
 					</td>
 				</tr>
