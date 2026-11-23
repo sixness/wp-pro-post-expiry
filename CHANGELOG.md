@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.3.1 — 2026-11-23
+- Fix: with redirect off, the old address of a drafted/trashed post now shows the 404 page (with the `post-expired` body class) instead of WordPress guessing a similar post such as "…-2".
+
 ## 1.3.0 — 2026-11-23
 - Redirect after expiry: send visitors of expired posts to a page of your choice (default in Settings, or a per-post URL in the Post Expiry box). Works together with Draft / Private / Trash / Move to category, including at the old address of drafted or trashed posts. 301 or 302; WPML sends visitors to the page in their language.
 - `post-expired` body class on expired posts' pages (added live by the countdown time, also on cached pages).

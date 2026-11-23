@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       WP Pro Post Expiry
  * Description:       Give posts an expiry date & time (edit screen, list column and Quick Edit). When a post expires it is switched to Draft, Private, moved to Trash, or moved into a chosen category — optionally together with all its WPML translations. Can redirect visitors from expired posts to a page of your choice and adds a "post-expired" body class. Includes a live countdown ([wppe_countdown] shortcode or automatic).
- * Version:           1.3.0
+ * Version:           1.3.1
  * Last Updated:      2026-11-23
  * Requires at least: 6.0
  * Requires PHP:      7.4
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WPPE_VERSION', '1.3.0' );
+define( 'WPPE_VERSION', '1.3.1' );
 define( 'WPPE_GITHUB_REPO', 'sixness/wp-pro-post-expiry' );
 define( 'WPPE_UPDATED', '2026-11-23' );
 define( 'WPPE_OPTION', 'wppe_settings' );
@@ -793,6 +793,10 @@ add_action( 'template_redirect', function () {
 	$post_id = wppe_current_expired_post();
 	if ( ! $post_id ) {
 		return;
+	}
+	if ( is_404() ) {
+		// Don't let WordPress "guess" a similar post (e.g. "…-2") for an expired post's old URL.
+		add_filter( 'do_redirect_guess_404_permalink', '__return_false' );
 	}
 	$target = wppe_redirect_target( $post_id );
 	if ( '' === $target ) {
